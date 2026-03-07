@@ -717,153 +717,245 @@ def show_status_limited():
           f"  {C.BRIGHT}{pub_ip}{C.RESET}")
     print()
 
+# ─── Box rendering ───────────────────────────────────────────────────────────
+# Each box is _BO chars wide visually:  │ + sp + _BI content + sp + │
+# Two boxes side-by-side + 1-char indent + 2-char gap = 1+_BO+2+_BO = 79 cols
+_ANSI_ESC = re.compile(r'\033\[[0-9;]*m')
+
+def _vis_len(s):
+    """Visual (printed) length of s, ignoring ANSI escape codes."""
+    return len(_ANSI_ESC.sub('', s))
+
+_BI = 34           # inner usable width (visual chars between the │ borders)
+_BO = _BI + 4      # outer visual width: │ + sp + _BI + sp + │
+
+def _bl(content=''):
+    """One content line inside a box, padded to _BO visual chars."""
+    pad = ' ' * max(0, _BI - _vis_len(content))
+    return f"{C.LIME}│{C.RESET} {content}{pad} {C.LIME}│{C.RESET}"
+
+def _bt():
+    return f"{C.LIME}┌{'─' * (_BI + 2)}┐{C.RESET}"
+
+def _bb():
+    return f"{C.LIME}└{'─' * (_BI + 2)}┘{C.RESET}"
+
+def _bm():
+    return f"{C.LIME}├{'─' * (_BI + 2)}┤{C.RESET}"
+
+def _be():
+    return f"{C.LIME}│{' ' * (_BI + 2)}│{C.RESET}"
+
+def _print_box_row(boxes):
+    """Print up to 2 boxes side-by-side (1-char indent, 2-char gap).
+    If only 1 box is supplied an empty filler box is printed beside it."""
+    if len(boxes) == 1:
+        h = len(boxes[0])
+        boxes = [boxes[0], [_bt()] + [_be()] * max(0, h - 2) + [_bb()]]
+    h = max(len(b) for b in boxes)
+    for b in boxes:
+        while len(b) < h:
+            b.insert(-1, _be())          # pad before bottom border
+    for a, b in zip(boxes[0], boxes[1]):
+        print(f" {a}  {b}")
+
+
+def _iface_box_lines(iface, detailed=False, num=None):
+    """Build list of rendered box lines for one wireless interface.
+    detailed=True adds MAC / DNS / RX / TX (used by interfaces_menu).
+    num=integer prepends a selector number to the header line."""
+    is_p2p = iface.startswith('p2p')
+    state  = iface_state(iface)
+    ip     = iface_ip(iface)
+    ssid   = iface_ssid(iface)
+    mode   = iface_mode(iface)
+    gw     = iface_gateway(iface)
+    wpa    = 'on' if wpa_running(iface) else 'off'
+    signal = iface_signal(iface) if not is_p2p else '—'
+
+    if detailed:
+        mac    = iface_mac(iface)
+        rx, tx = iface_txrx(iface)
+        dns    = system_dns()
+
+    if state == 'UP':         sc = C.LIME
+    elif 'no link' in state:  sc = C.WARN
+    elif state == 'MISSING':  sc = C.ERR
+    else:                     sc = C.DARK
+
+    if mode == 'monitor':     mc = f"{C.LIME}{C.BOLD}"
+    elif mode == 'AP':        mc = C.LIME
+    else:                     mc = C.DARK
+
+    tags = []
+    if iface == active_iface:      tags.append(f"{C.LIME}[ACTIVE]{C.RESET}")
+    if iface in protected_ifaces:  tags.append(f"{C.DARK}[prot]{C.RESET}")
+    if is_p2p:                     tags.append(f"{C.DARK}[p2p]{C.RESET}")
+
+    L = [_bt()]
+
+    # Header: optional selector number + name + state + mode
+    num_pfx = f"{C.BRIGHT}{num}.{C.RESET} " if num is not None else ""
+    r1 = f"{num_pfx}{C.WHITE}{C.BOLD}{iface}{C.RESET}  {sc}{state}{C.RESET}  {mc}{mode}{C.RESET}"
+    L.append(_bl(r1))
+
+    if tags:
+        L.append(_bl('  '.join(tags)))
+
+    if is_p2p:
+        L.append(_bl(f"{C.DARK}peer-to-peer / Wi-Fi Direct{C.RESET}"))
+        if detailed:
+            L.append(_bl(f"{C.BORDER}MAC{C.RESET}    {C.DARK}{mac}{C.RESET}"))
+    else:
+        ssid_show = (ssid[:25] + '…') if len(ssid) > 26 else ssid
+        L.append(_bl(f"{C.BORDER}SSID{C.RESET}   {C.BRIGHT}{ssid_show}{C.RESET}"))
+        L.append(_bl(f"{C.BORDER}Signal{C.RESET} {C.BRIGHT}{signal}{C.RESET}  {C.BORDER}WPA{C.RESET} {C.BRIGHT}{wpa}{C.RESET}"))
+        if detailed:
+            L.append(_bl(f"{C.BORDER}MAC{C.RESET}    {C.DARK}{mac}{C.RESET}"))
+
+    L.append(_bm())
+
+    L.append(_bl(f"{C.BORDER}IP{C.RESET}  {C.BRIGHT}{ip}{C.RESET}"))
+    L.append(_bl(f"{C.BORDER}GW{C.RESET}  {C.BRIGHT}{gw}{C.RESET}"))
+
+    if detailed:
+        L.append(_bl(f"{C.BORDER}DNS{C.RESET}  {C.BRIGHT}{dns}{C.RESET}"))
+        L.append(_bl(f"{C.BORDER}RX{C.RESET} {C.BRIGHT}{rx}{C.RESET}  {C.BORDER}TX{C.RESET} {C.BRIGHT}{tx}{C.RESET}"))
+
+    if mode == 'AP':
+        clients = get_ap_clients(iface)
+        if clients:
+            L.append(_bl(f"{C.LIME}AP clients: {len(clients)}{C.RESET}"))
+            for cl in clients[:2]:
+                L.append(_bl(f"  {C.BRIGHT}{cl['mac']}{C.RESET}  {C.DARK}{cl.get('signal','?')} dBm{C.RESET}"))
+        else:
+            L.append(_bl(f"{C.DARK}AP: no clients connected{C.RESET}"))
+
+    L.append(_bb())
+    return L
+
+
+def get_cellular_ifaces():
+    """Return list of cellular/mobile-data interfaces that are currently UP."""
+    patterns = ('rmnet', 'ccmni', 'wwan', 'ppp0', 'ppp1', 'usb')
+    _, out, _ = run("ip link show 2>/dev/null")
+    result = []
+    for line in out.splitlines():
+        if not line or not line[0].isdigit():
+            continue
+        parts = line.split(':')
+        if len(parts) < 2:
+            continue
+        name = parts[1].strip().split('@')[0]
+        if any(name.startswith(p) for p in patterns) and iface_state(name) == 'UP':
+            result.append(name)
+    return result
+
+
+def _conn_box_lines(iface, conn_type='WiFi'):
+    """Build connectivity status box for a single network interface."""
+    ip    = iface_ip(iface)
+    gw    = iface_gateway(iface)
+    state = iface_state(iface)
+    has_ip = (state == 'UP' and ip != 'no IP')
+    sc, label = (C.LIME, 'UP') if has_ip else (C.ERR, 'DOWN')
+    L = [_bt()]
+    L.append(_bl(f"{C.WHITE}{C.BOLD}{iface}{C.RESET}  {C.DARK}{conn_type}{C.RESET}  {sc}{label}{C.RESET}"))
+    L.append(_bl(f"{C.BORDER}Local{C.RESET}   {C.BRIGHT}{ip}{C.RESET}"))
+    if gw != '—':
+        L.append(_bl(f"{C.BORDER}GW{C.RESET}      {C.BRIGHT}{gw}{C.RESET}"))
+    pub = cached('pub_ip', get_public_ip, ttl=90)
+    L.append(_bl(f"{C.BORDER}Public{C.RESET}  {C.BRIGHT}{pub}{C.RESET}"))
+    L.append(_bb())
+    return L
+
+
+def _pitail_conn_box():
+    """Build Pi-Tail connectivity status box."""
+    pitail_ok = check_pitail()
+    kl_lbl = f"{C.LIME}ON{C.RESET}" if keepalive_running else f"{C.DARK}OFF{C.RESET}"
+    sc, status = (C.LIME, 'REACHABLE') if pitail_ok else (C.ERR, 'UNREACHABLE')
+    L = [_bt()]
+    L.append(_bl(f"{C.WHITE}{C.BOLD}Pi-Tail{C.RESET}    {sc}{status}{C.RESET}"))
+    L.append(_bl(f"{C.BORDER}Target{C.RESET}      {C.BRIGHT}{PITAIL_IP}{C.RESET}"))
+    L.append(_bl(f"{C.BORDER}Interface{C.RESET}   {C.BRIGHT}{PITAIL_IFACE}{C.RESET}"))
+    L.append(_bl(f"{C.BORDER}Keepalive{C.RESET}   {kl_lbl}"))
+    L.append(_bb())
+    return L
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 def show_status():
     if not IS_ROOT:
         show_status_limited()
         return
 
-    ifaces = get_wireless_ifaces()
+    ifaces      = get_wireless_ifaces()
+    disp_ifaces = [i for i in ifaces if not i.startswith('p2p')]
 
-    print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}")
+    # ── Interfaces ──────────────────────────────────────────────────────────
+    print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}\n")
 
-    for iface in [i for i in ifaces if not i.startswith('p2p')]:
-        state = iface_state(iface)
-        ip    = iface_ip(iface)
-        ssid  = iface_ssid(iface)
-        is_active    = (iface == active_iface)
-        is_protected = (iface in protected_ifaces)
+    if disp_ifaces:
+        for i in range(0, len(disp_ifaces), 2):
+            pair  = disp_ifaces[i:i+2]
+            boxes = [_iface_box_lines(iface) for iface in pair]
+            _print_box_row(boxes)
+            print()
+    else:
+        print(f"  {C.DARK}No wireless interfaces detected{C.RESET}\n")
 
-        if state == "UP":
-            sc = C.LIME
-        elif "no link" in state:
-            sc = C.WARN
-        elif state == "MISSING":
-            sc = C.ERR
-        else:
-            sc = C.DARK
+    # ── Connectivity ─────────────────────────────────────────────────────────
+    print(f"{C.MED}{C.BOLD}  ── Connectivity {'─' * 26}{C.RESET}\n")
 
-        tags = ""
-        if is_active:    tags += f"  {C.LIME}[ACTIVE]{C.RESET}"
-        if is_protected: tags += f"  {C.DARK}[protected]{C.RESET}"
+    conn_boxes = []
 
-        wpa  = f"{C.DARK}wpa:{'on' if wpa_running(iface) else 'off'}{C.RESET}"
-        mode = iface_mode(iface)
+    # One box per UP WiFi interface with an assigned IP
+    for iface in disp_ifaces:
+        if iface_state(iface) == 'UP' and iface_ip(iface) != 'no IP':
+            conn_boxes.append(_conn_box_lines(iface, 'WiFi'))
 
-        # Mode indicator — prominent for non-managed modes
-        if mode == 'monitor':
-            mode_tag = f"  {C.LIME}{C.BOLD}[MONITOR]{C.RESET}"
-        elif mode == 'AP':
-            mode_tag = f"  {C.LIME}[AP]{C.RESET}"
-        else:
-            mode_tag = f"  {C.DARK}[{mode}]{C.RESET}"
+    # Cellular / mobile-data interfaces
+    for iface in get_cellular_ifaces():
+        if iface_ip(iface) != 'no IP':
+            conn_boxes.append(_conn_box_lines(iface, 'Cellular'))
 
-        print(f"  {C.WHITE}{C.BOLD}{iface:<8}{C.RESET}"
-              f"  {sc}{state:<12}{C.RESET}"
-              f"{mode_tag}"
-              f"  {C.BORDER}IP {C.BRIGHT}{ip:<16}{C.RESET}"
-              f"  {C.BORDER}SSID {C.BRIGHT}{ssid}{C.RESET}"
-              f"  {wpa}{tags}")
-
-        # If interface is in AP mode, list connected clients
-        if mode == "AP":
-            clients = get_ap_clients(iface)
-            if clients:
-                for cl in clients:
-                    inactive = cl.get("inactive_ms", 0)
-                    inactive_s = f"{inactive // 1000}s ago"
-                    sig = cl.get("signal", "?")
-                    print(f"    {C.LIME}↳{C.RESET}  {C.BRIGHT}{cl['mac']}{C.RESET}"
-                          f"  {C.DARK}sig {sig} dBm  last seen {inactive_s}{C.RESET}")
-            else:
-                print(f"    {C.DARK}↳  no clients connected{C.RESET}")
-
-    print()
-    print(f"{C.MED}{C.BOLD}  ── Connectivity {'─' * 26}{C.RESET}")
-
-    internet_ok = check_internet()
-    pub_ip      = cached("pub_ip", get_public_ip, ttl=90)
-
-    def dot(ok_val):
-        return f"{C.LIME}●{C.RESET}" if ok_val else f"{C.ERR}●{C.RESET}"
-
-    if CURRENT_MODE in ('pitail', 'pentest'):
-        pitail_ok = check_pitail()
-        print(f"  {dot(pitail_ok)}  {C.DARK}Pi-Tail{C.RESET}    "
-              f"{PITAIL_IP:<18}  "
-              f"{C.LIME+'REACHABLE'+C.RESET if pitail_ok else C.ERR+'UNREACHABLE'+C.RESET}")
-    print(f"  {dot(internet_ok)}  {C.DARK}Internet{C.RESET}   "
-          f"{'8.8.8.8':<18}  "
-          f"{C.LIME+'ONLINE'+C.RESET if internet_ok else C.ERR+'OFFLINE'+C.RESET}")
-    print(f"  {C.BORDER}◈{C.RESET}  {C.DARK}Public IP{C.RESET}  "
-          f"  {C.BRIGHT}{pub_ip}{C.RESET}")
-
+    # Pi-Tail box — only when mode is active or keepalive is running
     if CURRENT_MODE == 'pitail' or keepalive_running:
-        kl_color = C.LIME if keepalive_running else C.DARK
-        kl_label = "ON" if keepalive_running else "OFF"
-        print(f"  {kl_color}⟳  Pi-Tail keepalive: {kl_label}{C.RESET}")
+        conn_boxes.append(_pitail_conn_box())
+
+    if conn_boxes:
+        for i in range(0, len(conn_boxes), 2):
+            _print_box_row(conn_boxes[i:i+2])
+            print()
+    else:
+        print(f"  {C.DARK}No active connections detected{C.RESET}\n")
 
     if watchdog_target_ssid:
-        print(f"\n  {C.LIME}⟳{C.RESET}  {C.DARK}Watchdog locked →{C.RESET} "
+        print(f"  {C.LIME}⟳{C.RESET}  {C.DARK}Watchdog →{C.RESET} "
               f"{C.LIME}{watchdog_target_ssid}{C.RESET}"
-              f"  {C.DARK}on {active_iface}{C.RESET}")
-    print()
+              f"  {C.DARK}on {active_iface}{C.RESET}\n")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SWITCH ACTIVE INTERFACE
 # ═══════════════════════════════════════════════════════════════════════════════
 def interfaces_menu():
-    """Interface browser — shows full detail for all wireless interfaces including p2p.
-    Also serves as the active interface selector."""
+    """Interface browser — detailed boxes for all interfaces including p2p.
+    Numbers shown inside each box; user picks a number to set the active interface."""
     global active_iface
     print_header()
     ifaces = get_wireless_ifaces()
     if not ifaces:
         err("No wireless interfaces detected"); pause(); return
 
-    dns = system_dns()
-
     print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}\n")
 
-    for i, iface in enumerate(ifaces, 1):
-        is_p2p      = iface.startswith('p2p')
-        is_active   = (iface == active_iface)
-        is_prot     = (iface in protected_ifaces)
-
-        state  = iface_state(iface)
-        ip     = iface_ip(iface)
-        mac    = iface_mac(iface)
-        ssid   = iface_ssid(iface)
-        mode   = iface_mode(iface)
-        gw     = iface_gateway(iface)
-        signal = iface_signal(iface) if not is_p2p else "—"
-        rx, tx = iface_txrx(iface)
-
-        # State colour
-        if state == "UP":          sc = C.LIME
-        elif "no link" in state:   sc = C.WARN
-        elif state == "MISSING":   sc = C.ERR
-        else:                      sc = C.DARK
-
-        # Tags
-        tags = []
-        if is_active: tags.append(f"{C.LIME}[ACTIVE]{C.RESET}")
-        if is_prot:   tags.append(f"{C.DARK}[protected]{C.RESET}")
-        if is_p2p:    tags.append(f"{C.DARK}[p2p — info only]{C.RESET}")
-        tag_str = "  ".join(tags)
-
-        num_col = C.DARK if is_p2p else C.BRIGHT
-        print(f"  {num_col}{i}{C.RESET}  {C.WHITE}{C.BOLD}{iface:<12}{C.RESET}"
-              f"  {sc}{state:<16}{C.RESET}"
-              f"  {C.DARK}{mode:<10}{C.RESET}"
-              f"  {tag_str}")
-        print(f"     {C.BORDER}MAC   {C.RESET}{C.BRIGHT}{mac}{C.RESET}")
-        print(f"     {C.BORDER}IP    {C.RESET}{C.BRIGHT}{ip:<24}{C.RESET}"
-              f"  {C.BORDER}GW    {C.RESET}{C.BRIGHT}{gw}{C.RESET}")
-        if not is_p2p:
-            print(f"     {C.BORDER}SSID  {C.RESET}{C.BRIGHT}{ssid:<24}{C.RESET}"
-                  f"  {C.BORDER}Signal{C.RESET}  {C.BRIGHT}{signal}{C.RESET}")
-        print(f"     {C.BORDER}DNS   {C.RESET}{C.BRIGHT}{dns:<24}{C.RESET}"
-              f"  {C.BORDER}RX{C.RESET} {C.BRIGHT}{rx}{C.RESET}  {C.BORDER}TX{C.RESET} {C.BRIGHT}{tx}{C.RESET}")
+    for i in range(0, len(ifaces), 2):
+        pair  = ifaces[i:i+2]
+        nums  = list(range(i + 1, i + 1 + len(pair)))
+        boxes = [_iface_box_lines(pair[j], detailed=True, num=nums[j])
+                 for j in range(len(pair))]
+        _print_box_row(boxes)
         print()
 
     selectable = [x for x in ifaces if not x.startswith('p2p')]
@@ -889,7 +981,7 @@ def interfaces_menu():
     except (ValueError, IndexError):
         err("Invalid selection"); pause()
 
-# Keep old name as alias for any internal references
+# Keep old name as alias for any stray internal references
 switch_interface = interfaces_menu
 
 # ═══════════════════════════════════════════════════════════════════════════════
