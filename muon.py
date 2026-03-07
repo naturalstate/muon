@@ -553,6 +553,62 @@ def iface_mode(iface):
             return line.split()[1]  # AP, managed, monitor, etc.
     return "unknown"
 
+def iface_mac(iface):
+    _, out, _ = run(f"ip link show {iface} 2>/dev/null")
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith('link/ether'):
+            return line.split()[1]
+    return "—"
+
+def iface_gateway(iface):
+    _, out, _ = run(f"ip route show dev {iface} 2>/dev/null")
+    for line in out.splitlines():
+        parts = line.split()
+        if parts and parts[0] == 'default' and 'via' in parts:
+            idx = parts.index('via')
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+    return "—"
+
+def iface_signal(iface):
+    _, out, _ = run(f"iwconfig {iface} 2>/dev/null")
+    m = re.search(r'Signal level[=:](-?\d+)', out)
+    return f"{m.group(1)} dBm" if m else "—"
+
+def _humanize_bytes(n):
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "—"
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if n < 1024:
+            return f"{n} {unit}" if unit == 'B' else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+def iface_txrx(iface):
+    _, out, _ = run(f"ip -s link show {iface} 2>/dev/null")
+    lines = out.splitlines()
+    rx = tx = "—"
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('RX:') and i + 1 < len(lines):
+            parts = lines[i + 1].split()
+            if parts:
+                rx = _humanize_bytes(parts[0])
+        elif stripped.startswith('TX:') and i + 1 < len(lines):
+            parts = lines[i + 1].split()
+            if parts:
+                tx = _humanize_bytes(parts[0])
+    return rx, tx
+
+def system_dns():
+    _, out, _ = run("grep '^nameserver' /etc/resolv.conf 2>/dev/null")
+    servers = [line.split()[1] for line in out.splitlines()
+               if line.startswith('nameserver') and len(line.split()) >= 2]
+    return '  '.join(servers[:3]) if servers else "—"
+
 def get_ap_clients(iface):
     """Return list of dicts {mac, signal, inactive_ms} for stations on AP iface."""
     _, out, _ = run(f"iw dev {iface} station dump 2>/dev/null")
@@ -755,29 +811,73 @@ def show_status():
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SWITCH ACTIVE INTERFACE
 # ═══════════════════════════════════════════════════════════════════════════════
-def switch_interface():
+def interfaces_menu():
+    """Interface browser — shows full detail for all wireless interfaces including p2p.
+    Also serves as the active interface selector."""
     global active_iface
+    print_header()
     ifaces = get_wireless_ifaces()
     if not ifaces:
         err("No wireless interfaces detected"); pause(); return
 
-    print(f"\n{C.MED}{C.BOLD}  ── Select Active Interface {'─' * 15}{C.RESET}\n")
-    for i, iface in enumerate(ifaces, 1):
-        state    = iface_state(iface)
-        ssid     = iface_ssid(iface)
-        cur_mark = f"  {C.LIME}← current{C.RESET}" if iface == active_iface else ""
-        prot     = f"  {C.DARK}[protected]{C.RESET}" if iface in protected_ifaces else ""
-        print(f"  {C.BRIGHT}{i}{C.RESET}.  {C.WHITE}{iface:<10}{C.RESET}"
-              f"  {C.DARK}{state:<14}{C.RESET}"
-              f"  SSID: {C.BRIGHT}{ssid}{C.RESET}"
-              f"{cur_mark}{prot}")
-    print()
+    dns = system_dns()
 
-    choice = input(f"  {C.BRIGHT}Interface number (Enter to cancel): {C.RESET}").strip()
+    print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}\n")
+
+    for i, iface in enumerate(ifaces, 1):
+        is_p2p      = iface.startswith('p2p')
+        is_active   = (iface == active_iface)
+        is_prot     = (iface in protected_ifaces)
+
+        state  = iface_state(iface)
+        ip     = iface_ip(iface)
+        mac    = iface_mac(iface)
+        ssid   = iface_ssid(iface)
+        mode   = iface_mode(iface)
+        gw     = iface_gateway(iface)
+        signal = iface_signal(iface) if not is_p2p else "—"
+        rx, tx = iface_txrx(iface)
+
+        # State colour
+        if state == "UP":          sc = C.LIME
+        elif "no link" in state:   sc = C.WARN
+        elif state == "MISSING":   sc = C.ERR
+        else:                      sc = C.DARK
+
+        # Tags
+        tags = []
+        if is_active: tags.append(f"{C.LIME}[ACTIVE]{C.RESET}")
+        if is_prot:   tags.append(f"{C.DARK}[protected]{C.RESET}")
+        if is_p2p:    tags.append(f"{C.DARK}[p2p — info only]{C.RESET}")
+        tag_str = "  ".join(tags)
+
+        num_col = C.DARK if is_p2p else C.BRIGHT
+        print(f"  {num_col}{i}{C.RESET}  {C.WHITE}{C.BOLD}{iface:<12}{C.RESET}"
+              f"  {sc}{state:<16}{C.RESET}"
+              f"  {C.DARK}{mode:<10}{C.RESET}"
+              f"  {tag_str}")
+        print(f"     {C.BORDER}MAC   {C.RESET}{C.BRIGHT}{mac}{C.RESET}")
+        print(f"     {C.BORDER}IP    {C.RESET}{C.BRIGHT}{ip:<24}{C.RESET}"
+              f"  {C.BORDER}GW    {C.RESET}{C.BRIGHT}{gw}{C.RESET}")
+        if not is_p2p:
+            print(f"     {C.BORDER}SSID  {C.RESET}{C.BRIGHT}{ssid:<24}{C.RESET}"
+                  f"  {C.BORDER}Signal{C.RESET}  {C.BRIGHT}{signal}{C.RESET}")
+        print(f"     {C.BORDER}DNS   {C.RESET}{C.BRIGHT}{dns:<24}{C.RESET}"
+              f"  {C.BORDER}RX{C.RESET} {C.BRIGHT}{rx}{C.RESET}  {C.BORDER}TX{C.RESET} {C.BRIGHT}{tx}{C.RESET}")
+        print()
+
+    selectable = [x for x in ifaces if not x.startswith('p2p')]
+    if not selectable:
+        pause(); return
+
+    n = len(ifaces)
+    choice = input(f"  {C.BRIGHT}Set active interface [1-{n}, Enter=cancel]: {C.RESET}").strip()
     if not choice:
         return
     try:
         chosen = ifaces[int(choice) - 1]
+        if chosen.startswith('p2p'):
+            warn("p2p interfaces cannot be set as active."); pause(); return
         if chosen in protected_ifaces:
             warn(f"{chosen} is marked protected.")
             confirm = input(f"  {C.BRIGHT}Select it anyway? [y/N]: {C.RESET}").strip().lower()
@@ -788,6 +888,9 @@ def switch_interface():
         pause()
     except (ValueError, IndexError):
         err("Invalid selection"); pause()
+
+# Keep old name as alias for any internal references
+switch_interface = interfaces_menu
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  INTERFACE CONTROL
@@ -2046,7 +2149,7 @@ def settings_menu():
         print(f"  {C.BRIGHT}8{C.RESET}.  Command variables"
               f"  {C.DARK}{' '.join(f'{k}={v}' for k, v in CMD_VARS.items() if v)}{C.RESET}")
         print(f"  {C.BRIGHT}9{C.RESET}.  Projects  {proj_hint}")
-        _menu_item('i', f"Switch interface   (now: {active_iface})", IS_ROOT)
+        _menu_item('i', f"Interfaces  {C.DARK}(active: {active_iface}){C.RESET}", IS_ROOT)
         print(f"  {C.BRIGHT}q{C.RESET}.  Back")
         print()
 
@@ -3209,8 +3312,8 @@ def main():
         _menu_item('5', f"Disconnect {iface_label}",                                          r)
         _menu_item('6', f"Monitor mode  {C.DARK}({active_iface}){C.RESET}"
                         if r else "Monitor mode",                                              r)
-        _menu_item('i', f"Switch interface  {C.DARK}(now: {active_iface}){C.RESET}"
-                        if r else "Switch interface",                                          r)
+        _menu_item('i', f"Interfaces  {C.DARK}(active: {active_iface}){C.RESET}"
+                        if r else "Interfaces",                                                r)
         if CURRENT_MODE:
             mode_name = MODE_DEFS[CURRENT_MODE]['name']
             print(f"  {C.BRIGHT}m{C.RESET}.  {C.LIME}{mode_name} screen{C.RESET}")
