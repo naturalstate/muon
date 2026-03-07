@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add muon.py README.md)",
+      "Bash(git commit:*)",
+      "Bash(git push)",
+      "Bash(git add muon.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''muon.py''\\).read\\(\\)\\); print\\(''syntax OK''\\)\")",
+      "Bash(py -3 -c \"import ast; ast.parse\\(open\\(''muon.py''\\).read\\(\\)\\); print\\(''syntax OK''\\)\")",
+      "Bash(py -3 -c \"import ast; ast.parse\\(open\\(''muon.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''syntax OK''\\)\")",
+      "Bash(py -3 -c \"import ast; ast.parse\\(open\\(r''C:\\\\Users\\\\RyanDenham\\\\Documents\\\\Muon_wireless_nethunter\\\\muon\\\\muon.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(py -3 -c \"import ast; ast.parse\\(open\\(r''C:\\\\Users\\\\RyanDenham\\\\Documents\\\\Muon_wireless_nethunter\\\\muon\\\\muon.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(py -3 -c \":*)",
+      "Bash(python -c \":*)",
+      "Bash(python3 -m py_compile \"C:/Users/RyanDenham/Documents/Muon_wireless_nethunter/muon/muon.py\")",
+      "Bash(git pull --rebase)",
+      "Bash(git add README.md)",
+      "WebFetch(domain:arm.kali.org)",
+      "WebFetch(domain:www.kali.org)",
+      "WebFetch(domain:www.freedesktop.org)"
+    ]
+  }
+}
