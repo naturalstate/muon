@@ -66,8 +66,8 @@ watchdog_target_ssid = None        # if set, watchdog enforces this SSID
 
 # Pi-Tail keepalive — monitors wlan0 and reconnects to hotspot if it drops
 PITAIL_IFACE         = "wlan0"
-PITAIL_SSID          = ""              # set via Settings → Configure Pi-Tail
-PITAIL_PASS          = ""              # set via Settings → Configure Pi-Tail
+PITAIL_SSID          = "sepultura"     # Pi-Tail project default hotspot SSID (public default)
+PITAIL_PASS          = "R4t4m4h4tt4"  # Pi-Tail project default hotspot password (public default)
 PITAIL_KEEPALIVE_INT = 20          # seconds between keepalive checks
 keepalive_running    = False
 keepalive_thread     = None
