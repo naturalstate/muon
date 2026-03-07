@@ -670,7 +670,7 @@ def show_status():
 
     print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}")
 
-    for iface in ifaces:
+    for iface in [i for i in ifaces if not i.startswith('p2p')]:
         state = iface_state(iface)
         ip    = iface_ip(iface)
         ssid  = iface_ssid(iface)
@@ -741,9 +741,10 @@ def show_status():
     print(f"  {C.BORDER}◈{C.RESET}  {C.DARK}Public IP{C.RESET}  "
           f"  {C.BRIGHT}{pub_ip}{C.RESET}")
 
-    kl_color = C.LIME if keepalive_running else C.DARK
-    kl_label = "ON" if keepalive_running else "OFF"
-    print(f"  {kl_color}⟳  Pi-Tail keepalive: {kl_label}{C.RESET}")
+    if CURRENT_MODE == 'pitail' or keepalive_running:
+        kl_color = C.LIME if keepalive_running else C.DARK
+        kl_label = "ON" if keepalive_running else "OFF"
+        print(f"  {kl_color}⟳  Pi-Tail keepalive: {kl_label}{C.RESET}")
 
     if watchdog_target_ssid:
         print(f"\n  {C.LIME}⟳{C.RESET}  {C.DARK}Watchdog locked →{C.RESET} "
