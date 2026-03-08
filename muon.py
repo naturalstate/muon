@@ -26,6 +26,95 @@ import readline
 IS_ROOT = os.geteuid() == 0
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  HARDWARE & OS DETECTION
+#  Detected once at startup; displayed in header and used for hints/warnings.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _detect_platform():
+    """Return (hw_tag, os_tag, sudo_hint) strings describing this device.
+
+    hw_tag  — e.g. 'Raspberry Pi 4B', 'Nexus 5 (NetHunter)', 'Generic ARM', ...
+    os_tag  — e.g. 'Kali Linux ARM', 'Kali NetHunter', 'Termux (Android)', ...
+    sudo_hint — non-empty string if the user should re-launch with sudo
+    """
+    hw_tag = ''
+    os_tag = ''
+    sudo_hint = ''
+
+    # ── Hardware ─────────────────────────────────────────────────────────────
+    # Raspberry Pi: /proc/device-tree/model or /proc/cpuinfo Model line
+    model = ''
+    try:
+        with open('/proc/device-tree/model', 'r') as f:
+            model = f.read().rstrip('\x00').strip()
+    except OSError:
+        pass
+    if not model:
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                for line in f:
+                    if line.lower().startswith('model') and ':' in line:
+                        model = line.split(':', 1)[1].strip()
+                        break
+        except OSError:
+            pass
+
+    if 'raspberry pi' in model.lower():
+        hw_tag = model  # e.g. "Raspberry Pi 4 Model B Rev 1.4"
+    else:
+        # Generic ARM vs x86 detection
+        machine = os.uname().machine if hasattr(os, 'uname') else ''
+        if machine.startswith('aarch64') or machine.startswith('armv'):
+            hw_tag = f'ARM ({machine})'
+        elif machine in ('x86_64', 'amd64'):
+            hw_tag = f'x86_64'
+        elif machine:
+            hw_tag = machine
+
+    # ── OS / distro ──────────────────────────────────────────────────────────
+    # Check for Termux (Android, non-rooted)
+    if 'com.termux' in os.environ.get('PREFIX', '') or \
+       os.path.isdir('/data/data/com.termux'):
+        os_tag = 'Termux (Android)'
+    else:
+        # Read /etc/os-release
+        osrel = {}
+        try:
+            with open('/etc/os-release', 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        osrel[k] = v.strip('"\'')
+        except OSError:
+            pass
+
+        distro   = osrel.get('ID', '').lower()
+        variant  = osrel.get('VARIANT_ID', '').lower()
+        pretty   = osrel.get('PRETTY_NAME', '')
+
+        if 'nethunter' in pretty.lower() or variant == 'nethunter':
+            os_tag = 'Kali NetHunter'
+        elif distro == 'kali':
+            machine = os.uname().machine if hasattr(os, 'uname') else ''
+            if machine.startswith('aarch64') or machine.startswith('armv'):
+                os_tag = 'Kali Linux ARM'
+            else:
+                os_tag = 'Kali Linux'
+        elif pretty:
+            os_tag = pretty
+        elif distro:
+            os_tag = distro.capitalize()
+
+    # ── sudo hint ────────────────────────────────────────────────────────────
+    if not IS_ROOT and os_tag not in ('Termux (Android)',):
+        sudo_hint = 'run with sudo for full functionality'
+
+    return hw_tag, os_tag, sudo_hint
+
+
+_HW_TAG, _OS_TAG, _SUDO_HINT = _detect_platform()
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  PATHS & CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 CONFIG_DIR     = os.path.expanduser("~/.muon")
@@ -668,13 +757,27 @@ LOGO = (
 def print_header():
     os.system("clear")
     print(LOGO)
+
+    # ── hardware / OS tag line ────────────────────────────────────────────────
+    hw_parts = []
+    if _HW_TAG:
+        hw_parts.append(f"{C.MED}{_HW_TAG}{C.RESET}")
+    if _OS_TAG:
+        hw_parts.append(f"{C.MED}{_OS_TAG}{C.RESET}")
+    if hw_parts:
+        print(f"  {C.BORDER}┄{C.RESET}  {'  ·  '.join(hw_parts)}")
+
+    # ── mode / root / sudo tags ───────────────────────────────────────────────
     tags = []
     if not IS_ROOT:
-        tags.append(f"{C.WARN}[limited]{C.RESET}")
+        tags.append(f"{C.WARN}[limited mode]{C.RESET}")
+        if _SUDO_HINT:
+            tags.append(f"{C.DARK}({_SUDO_HINT}){C.RESET}")
     if CURRENT_MODE:
         tags.append(f"{C.LIME}[{MODE_DEFS[CURRENT_MODE]['name']} mode]{C.RESET}")
     if tags:
         print(f"  {'  '.join(tags)}")
+
     print()
 
 def show_status_limited():
@@ -746,18 +849,29 @@ def _bm():
 def _be():
     return f"{C.LIME}│{' ' * (_BI + 2)}│{C.RESET}"
 
+def _term_width():
+    try:
+        return os.get_terminal_size().columns
+    except OSError:
+        return 80
+
 def _print_box_row(boxes):
-    """Print up to 2 boxes side-by-side (1-char indent, 2-char gap).
-    If only 1 box is supplied an empty filler box is printed beside it."""
-    if len(boxes) == 1:
-        h = len(boxes[0])
-        boxes = [boxes[0], [_bt()] + [_be()] * max(0, h - 2) + [_bb()]]
-    h = max(len(b) for b in boxes)
-    for b in boxes:
-        while len(b) < h:
-            b.insert(-1, _be())          # pad before bottom border
-    for a, b in zip(boxes[0], boxes[1]):
-        print(f" {a}  {b}")
+    """Print boxes — side-by-side when terminal is wide enough, stacked otherwise.
+    Requires ~82 cols for 2 boxes (1 indent + 38 + 2 gap + 38 + 2 border)."""
+    wide = _term_width() >= 82
+    if wide and len(boxes) == 2:
+        h = max(len(b) for b in boxes)
+        for b in boxes:
+            while len(b) < h:
+                b.insert(-1, _be())
+        for a, b in zip(boxes[0], boxes[1]):
+            print(f" {a}  {b}")
+    else:
+        for idx, box in enumerate(boxes):
+            for line in box:
+                print(f" {line}")
+            if idx < len(boxes) - 1:
+                print()   # gap between stacked boxes; caller adds final gap
 
 
 def _iface_box_lines(iface, detailed=False, num=None):
