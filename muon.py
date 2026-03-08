@@ -829,6 +829,24 @@ def _vis_len(s):
     """Visual (printed) length of s, ignoring ANSI escape codes."""
     return len(_ANSI_ESC.sub('', s))
 
+def _iface_uptime(iface):
+    """How long this interface has been in its current operstate.
+    Uses the mtime of /sys/class/net/<iface>/operstate — updated by the
+    kernel each time the interface changes state."""
+    try:
+        mtime   = os.path.getmtime(f'/sys/class/net/{iface}/operstate')
+        elapsed = int(time.time() - mtime)
+        if elapsed < 60:
+            return f'{elapsed}s'
+        elif elapsed < 3600:
+            return f'{elapsed // 60}m {elapsed % 60}s'
+        else:
+            h = elapsed // 3600
+            m = (elapsed % 3600) // 60
+            return f'{h}h {m}m'
+    except OSError:
+        return '—'
+
 _BI = 34           # inner usable width (visual chars between the │ borders)
 _BO = _BI + 4      # outer visual width: │ + sp + _BI + sp + │
 
@@ -925,6 +943,8 @@ def _iface_box_lines(iface, detailed=False, num=None, show_conn=False):
         L.append(_bl(f"{C.BORDER}SSID{C.RESET}   {C.BRIGHT}{ssid_show}{C.RESET}"))
         L.append(_bl(f"{C.BORDER}Signal{C.RESET} {C.BRIGHT}{signal}{C.RESET}  {C.BORDER}WPA{C.RESET} {C.BRIGHT}{wpa}{C.RESET}"))
         if detailed:
+            uptime = _iface_uptime(iface)
+            L.append(_bl(f"{C.BORDER}Up{C.RESET}     {C.BRIGHT}{uptime}{C.RESET}"))
             L.append(_bl(f"{C.BORDER}MAC{C.RESET}    {C.DARK}{mac}{C.RESET}"))
 
     L.append(_bm())
@@ -1011,7 +1031,11 @@ def show_status():
     disp_ifaces = [i for i in ifaces if not i.startswith('p2p')]
 
     # ── Interfaces & Connectivity (one box per interface) ────────────────────
-    print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}\n")
+    _ts  = datetime.datetime.now().strftime('%H:%M')
+    _tag = f'↺ {_ts}'
+    _left = '  ── Interfaces '
+    _dashes = max(2, _term_width() - len(_left) - len(_tag) - 2)
+    print(f"{C.MED}{C.BOLD}{_left}{'─' * _dashes}{C.RESET}  {C.DARK}{_tag}{C.RESET}\n")
 
     boxes = [_iface_box_lines(iface, show_conn=True) for iface in disp_ifaces]
 
