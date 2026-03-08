@@ -1062,11 +1062,104 @@ def show_status():
               f"  {C.DARK}on {active_iface}{C.RESET}\n")
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  SPEED TEST
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _curl_speed_test(iface):
+    """Fallback speed test using curl bound to iface — no extra tools needed.
+
+    Download: 25 MB from Cloudflare's speed endpoint (speed.cloudflare.com).
+    Latency:  4-packet ICMP ping to 8.8.8.8 via the interface.
+    Reports speed in Mbps; upload is omitted in the curl path since piping
+    /dev/urandom reliably requires bash process substitution — use speedtest-cli
+    for upload figures.
+    """
+    # ── Latency ──────────────────────────────────────────────────────────────
+    info("Ping 8.8.8.8 via {iface} (4 packets)…".format(iface=iface))
+    _, ping_out, _ = run(f"ping -I {iface} -c 4 -W 3 8.8.8.8 2>&1", timeout=20)
+    if ping_out:
+        for line in ping_out.splitlines():
+            low = line.lower()
+            if any(k in low for k in ('rtt', 'avg', 'packet loss', 'transmitted')):
+                print(f"  {C.DARK}{line.strip()}{C.RESET}")
+    else:
+        warn("Ping failed — host may block ICMP, or interface has no route")
+    print()
+
+    # ── Download ─────────────────────────────────────────────────────────────
+    url = "https://speed.cloudflare.com/__down?bytes=25000000"
+    info("Download test — 25 MB from speed.cloudflare.com…")
+    c, out, err_out = run(
+        f'curl --interface {iface} -o /dev/null -s --max-time 45 '
+        f'-w "%{{speed_download}}\\n%{{size_download}}\\n%{{time_total}}" "{url}"',
+        timeout=50,
+    )
+    if c == 0 and out.strip():
+        parts = out.strip().splitlines()
+        try:
+            bps   = float(parts[0])
+            size  = int(float(parts[1]))
+            secs  = float(parts[2])
+            mbps  = bps * 8 / 1_000_000
+            print(f"\n  {C.LIME}↓  {mbps:.1f} Mbps{C.RESET}"
+                  f"  {C.DARK}({size / 1e6:.1f} MB in {secs:.1f}s){C.RESET}")
+        except (IndexError, ValueError):
+            ok(out.strip())
+    else:
+        err(f"curl download test failed{': ' + err_out if err_out else ''}")
+
+    print()
+    warn("Install speedtest-cli for upload speed + server selection:")
+    print(f"  {C.DARK}apt install speedtest-cli   # Kali / Raspberry Pi")
+    print(f"  pip3 install speedtest-cli  # Termux / any Python env{C.RESET}")
+
+
+def speed_test(iface):
+    """Run a speed test bound to *iface*, auto-detecting the best available tool.
+
+    Tool priority:
+      1. speedtest-cli  —  apt/pip, uses --source <ip> to bind to interface
+      2. speedtest      —  Ookla official, uses --interface <iface>
+      3. curl fallback  —  always available; download-only via Cloudflare
+    """
+    ip = iface_ip(iface)
+    if ip == 'no IP':
+        err(f"{iface} has no IP address — bring it up and connect first")
+        pause(); return
+
+    print_header()
+    print(f"{C.MED}{C.BOLD}  ── Speed Test  {C.WHITE}{iface}{C.MED}"
+          f"  ({ip})  {'─' * max(2, 35 - len(iface) - len(ip))} {C.RESET}\n")
+
+    _, sc_cli, _  = run("which speedtest-cli 2>/dev/null")
+    _, sc_ookla, _ = run("which speedtest 2>/dev/null")
+
+    if sc_cli:
+        info(f"speedtest-cli — bound to {iface} ({ip})")
+        print()
+        os.system(f"speedtest-cli --source {ip}")
+        pause()
+    elif sc_ookla:
+        info(f"speedtest (Ookla) — interface {iface}")
+        print()
+        os.system(f"speedtest --interface {iface}")
+        pause()
+    else:
+        _curl_speed_test(iface)
+        pause()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  SWITCH ACTIVE INTERFACE
 # ═══════════════════════════════════════════════════════════════════════════════
 def interfaces_menu():
     """Interface browser — detailed boxes for all interfaces including p2p.
-    Numbers shown inside each box; user picks a number to set the active interface."""
+
+    Prompt accepts:
+      [1-N]    set that interface as active
+      t[1-N]   run speed test on that interface  (e.g. t1, t2)
+      Enter    cancel / back
+    """
     global active_iface
     print_header()
     ifaces = get_wireless_ifaces()
@@ -1076,8 +1169,8 @@ def interfaces_menu():
     print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}\n")
 
     for i in range(0, len(ifaces), 2):
-        pair  = ifaces[i:i+2]
-        nums  = list(range(i + 1, i + 1 + len(pair)))
+        pair = ifaces[i:i+2]
+        nums = list(range(i + 1, i + 1 + len(pair)))
         boxes = [_iface_box_lines(pair[j], detailed=True, num=nums[j])
                  for j in range(len(pair))]
         _print_box_row(boxes)
@@ -1088,9 +1181,21 @@ def interfaces_menu():
         pause(); return
 
     n = len(ifaces)
-    choice = input(f"  {C.BRIGHT}Set active interface [1-{n}, Enter=cancel]: {C.RESET}").strip()
+    print(f"  {C.DARK}[1-{n}] set active  ·  t[1-{n}] speed test  ·  Enter cancel{C.RESET}")
+    choice = input(f"  {C.BRIGHT}>{C.RESET} ").strip().lower()
     if not choice:
         return
+
+    # ── Speed test shortcut: t1, t2 … ────────────────────────────────────────
+    if choice.startswith('t') and len(choice) > 1:
+        try:
+            target = ifaces[int(choice[1:]) - 1]
+            speed_test(target)
+        except (ValueError, IndexError):
+            err("Invalid interface number"); pause()
+        return
+
+    # ── Set active interface ──────────────────────────────────────────────────
     try:
         chosen = ifaces[int(choice) - 1]
         if chosen.startswith('p2p'):
