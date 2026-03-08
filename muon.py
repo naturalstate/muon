@@ -145,6 +145,11 @@ class C:
     RESET  = '\033[0m'
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  TUNING
+# ═══════════════════════════════════════════════════════════════════════════════
+REFRESH_INTERVAL = 15   # seconds between auto-refreshes on the main menu
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  STATE
 # ═══════════════════════════════════════════════════════════════════════════════
 active_iface         = "wlan1"
@@ -2067,6 +2072,57 @@ def _getch():
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
+def _countdown_getch(prompt, timeout=REFRESH_INTERVAL):
+    """Main-menu input: single keypress with a live countdown to auto-refresh.
+
+    Draws the prompt with a right-side '[↺ Xs]' counter that ticks down every
+    second.  Any keypress is returned immediately (no Enter needed) and the
+    menu action runs.  When the countdown hits 0 an empty string is returned
+    so the main loop falls through and re-renders the screen with fresh data.
+
+    The countdown intentionally sits to the RIGHT of the prompt so the cursor
+    stays at '>' — the counter never shifts the typing position.
+    """
+    fd  = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+
+    def _draw(secs):
+        tag = f"[{C.DARK}↺{secs:2d}s{C.RESET}]"
+        # Write full line then move cursor back to just after the '>' prompt
+        # so it appears to sit there rather than at the end of the tag.
+        line   = f'\r{prompt} {tag}\033[K'
+        # visible width of tag (no ANSI): '[↺NNs]' = 7 chars + 1 space = 8
+        go_back = 8
+        sys.stdout.write(line + f'\033[{go_back}D')
+        sys.stdout.flush()
+
+    try:
+        tty.setraw(fd)
+        remaining = timeout
+        _draw(remaining)
+
+        while True:
+            ready = select.select([sys.stdin], [], [], 1.0)
+            if ready[0]:
+                ch = sys.stdin.read(1)
+                sys.stdout.write('\r\n')
+                sys.stdout.flush()
+                if ch == '\x03':
+                    raise KeyboardInterrupt
+                if ch in ('\r', '\n'):
+                    return ''           # bare Enter → no-op, triggers re-render
+                return ch.lower()
+            else:
+                remaining -= 1
+                if remaining <= 0:
+                    sys.stdout.write('\r\n')
+                    sys.stdout.flush()
+                    return ''           # timeout → re-render (auto-refresh)
+                _draw(remaining)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 def _input_prefilled(prompt, prefill=''):
     """Full-featured single-line editor — arrows, Home/End, Delete, Ctrl shortcuts.
 
@@ -3549,7 +3605,7 @@ def main():
         print(f"  {C.BRIGHT}0{C.RESET}.  Exit")
         print()
 
-        choice = input(f"  {C.BRIGHT}>{C.RESET} ").strip().lower()
+        choice = _countdown_getch(f"  {C.BRIGHT}>{C.RESET}")
 
         if   choice == '1':   bring_up()              if r else requires_root()
         elif choice == '2':   bring_down()             if r else requires_root()
