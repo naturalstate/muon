@@ -148,6 +148,7 @@ class C:
 #  TUNING
 # ═══════════════════════════════════════════════════════════════════════════════
 REFRESH_INTERVAL = 15   # seconds between auto-refreshes on the main menu
+AUTO_REFRESH     = True # set False in Settings to disable countdown + auto-refresh
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  STATE
@@ -1036,11 +1037,7 @@ def show_status():
     disp_ifaces = [i for i in ifaces if not i.startswith('p2p')]
 
     # ── Interfaces & Connectivity (one box per interface) ────────────────────
-    _ts  = datetime.datetime.now().strftime('%H:%M')
-    _tag = f'↺ {_ts}'
-    _left = '  ── Interfaces '
-    _dashes = max(2, _term_width() - len(_left) - len(_tag) - 2)
-    print(f"{C.MED}{C.BOLD}{_left}{'─' * _dashes}{C.RESET}  {C.DARK}{_tag}{C.RESET}\n")
+    print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}\n")
 
     boxes = [_iface_box_lines(iface, show_conn=True) for iface in disp_ifaces]
 
@@ -2098,27 +2095,44 @@ def _countdown_getch(prompt, timeout=REFRESH_INTERVAL):
 
     try:
         tty.setraw(fd)
-        remaining = timeout
-        _draw(remaining)
 
-        while True:
-            ready = select.select([sys.stdin], [], [], 1.0)
-            if ready[0]:
-                ch = sys.stdin.read(1)
-                sys.stdout.write('\r\n')
-                sys.stdout.flush()
-                if ch == '\x03':
-                    raise KeyboardInterrupt
-                if ch in ('\r', '\n'):
-                    return ''           # bare Enter → no-op, triggers re-render
-                return ch.lower()
-            else:
-                remaining -= 1
-                if remaining <= 0:
+        if AUTO_REFRESH:
+            # ── countdown mode ───────────────────────────────────────────────
+            remaining = timeout
+            _draw(remaining)
+            while True:
+                ready = select.select([sys.stdin], [], [], 1.0)
+                if ready[0]:
+                    ch = sys.stdin.read(1)
                     sys.stdout.write('\r\n')
                     sys.stdout.flush()
-                    return ''           # timeout → re-render (auto-refresh)
-                _draw(remaining)
+                    if ch == '\x03':
+                        raise KeyboardInterrupt
+                    if ch in ('\r', '\n'):
+                        return ''       # bare Enter → re-render immediately
+                    return ch.lower()
+                else:
+                    remaining -= 1
+                    if remaining <= 0:
+                        sys.stdout.write('\r\n')
+                        sys.stdout.flush()
+                        return ''       # timeout → auto-refresh
+                    _draw(remaining)
+        else:
+            # ── static prompt, block until keypress (no countdown) ───────────
+            sys.stdout.write(f'\r{prompt} \033[K')
+            sys.stdout.flush()
+            while True:
+                ready = select.select([sys.stdin], [], [])
+                if ready[0]:
+                    ch = sys.stdin.read(1)
+                    sys.stdout.write('\r\n')
+                    sys.stdout.flush()
+                    if ch == '\x03':
+                        raise KeyboardInterrupt
+                    if ch in ('\r', '\n'):
+                        return ''
+                    return ch.lower()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -2396,12 +2410,13 @@ def projects_menu():
 
 def settings_menu():
     """Settings and configuration — things that don't belong on the main menu."""
-    global WATCHDOG_INTERVAL
+    global WATCHDOG_INTERVAL, AUTO_REFRESH
     while True:
         print_header()
         wd_lbl = f"{C.LIME}ON{C.RESET}"  if watchdog_running  else f"{C.DARK}OFF{C.RESET}"
         tgt    = f"  {C.LIME}-> {watchdog_target_ssid}{C.RESET}" if watchdog_target_ssid else ""
         kl_lbl = f"{C.LIME}ON{C.RESET}"  if keepalive_running else f"{C.DARK}OFF{C.RESET}"
+        ar_lbl = f"{C.LIME}ON{C.RESET}"  if AUTO_REFRESH      else f"{C.DARK}OFF{C.RESET}"
         mode_lbl = (f"{C.LIME}{MODE_DEFS[CURRENT_MODE]['name']}{C.RESET}"
                     if CURRENT_MODE else f"{C.DARK}None{C.RESET}")
 
@@ -2421,6 +2436,8 @@ def settings_menu():
               f"  {C.DARK}{' '.join(f'{k}={v}' for k, v in CMD_VARS.items() if v)}{C.RESET}")
         print(f"  {C.BRIGHT}9{C.RESET}.  Projects  {proj_hint}")
         _menu_item('i', f"Interfaces  {C.DARK}(active: {active_iface}){C.RESET}", IS_ROOT)
+        print(f"  {C.BRIGHT}a{C.RESET}.  Auto-refresh      [{ar_lbl}]"
+              f"  {C.DARK}(interval: {REFRESH_INTERVAL}s){C.RESET}")
         print(f"  {C.BRIGHT}q{C.RESET}.  Back")
         print()
 
@@ -2435,6 +2452,10 @@ def settings_menu():
         elif choice == '8': _cmd_vars_screen()
         elif choice == '9': projects_menu()
         elif choice == 'i': switch_interface()       if IS_ROOT else requires_root()
+        elif choice == 'a':
+            AUTO_REFRESH = not AUTO_REFRESH
+            ok(f"Auto-refresh {'enabled' if AUTO_REFRESH else 'disabled'}")
+            pause()
         elif choice.lower() in ('q', '0', ''):
             break
 
