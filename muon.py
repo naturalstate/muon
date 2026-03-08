@@ -874,7 +874,7 @@ def _print_box_row(boxes):
                 print()   # gap between stacked boxes; caller adds final gap
 
 
-def _iface_box_lines(iface, detailed=False, num=None):
+def _iface_box_lines(iface, detailed=False, num=None, show_conn=False):
     """Build list of rendered box lines for one wireless interface.
     detailed=True adds MAC / DNS / RX / TX (used by interfaces_menu).
     num=integer prepends a selector number to the header line."""
@@ -931,6 +931,9 @@ def _iface_box_lines(iface, detailed=False, num=None):
 
     L.append(_bl(f"{C.BORDER}IP{C.RESET}  {C.BRIGHT}{ip}{C.RESET}"))
     L.append(_bl(f"{C.BORDER}GW{C.RESET}  {C.BRIGHT}{gw}{C.RESET}"))
+    if show_conn and ip != 'no IP':
+        pub = cached('pub_ip', get_public_ip, ttl=90)
+        L.append(_bl(f"{C.BORDER}Public{C.RESET}  {C.BRIGHT}{pub}{C.RESET}"))
 
     if detailed:
         L.append(_bl(f"{C.BORDER}DNS{C.RESET}  {C.BRIGHT}{dns}{C.RESET}"))
@@ -1007,43 +1010,25 @@ def show_status():
     ifaces      = get_wireless_ifaces()
     disp_ifaces = [i for i in ifaces if not i.startswith('p2p')]
 
-    # ── Interfaces ──────────────────────────────────────────────────────────
+    # ── Interfaces & Connectivity (one box per interface) ────────────────────
     print(f"{C.MED}{C.BOLD}  ── Interfaces {'─' * 28}{C.RESET}\n")
 
-    if disp_ifaces:
-        for i in range(0, len(disp_ifaces), 2):
-            pair  = disp_ifaces[i:i+2]
-            boxes = [_iface_box_lines(iface) for iface in pair]
-            _print_box_row(boxes)
-            print()
-    else:
-        print(f"  {C.DARK}No wireless interfaces detected{C.RESET}\n")
+    boxes = [_iface_box_lines(iface, show_conn=True) for iface in disp_ifaces]
 
-    # ── Connectivity ─────────────────────────────────────────────────────────
-    print(f"{C.MED}{C.BOLD}  ── Connectivity {'─' * 26}{C.RESET}\n")
-
-    conn_boxes = []
-
-    # One box per UP WiFi interface with an assigned IP
-    for iface in disp_ifaces:
-        if iface_state(iface) == 'UP' and iface_ip(iface) != 'no IP':
-            conn_boxes.append(_conn_box_lines(iface, 'WiFi'))
-
-    # Cellular / mobile-data interfaces
+    # Cellular interfaces — one box each
     for iface in get_cellular_ifaces():
-        if iface_ip(iface) != 'no IP':
-            conn_boxes.append(_conn_box_lines(iface, 'Cellular'))
+        boxes.append(_conn_box_lines(iface, 'Cellular'))
 
     # Pi-Tail box — only when mode is active or keepalive is running
     if CURRENT_MODE == 'pitail' or keepalive_running:
-        conn_boxes.append(_pitail_conn_box())
+        boxes.append(_pitail_conn_box())
 
-    if conn_boxes:
-        for i in range(0, len(conn_boxes), 2):
-            _print_box_row(conn_boxes[i:i+2])
+    if boxes:
+        for i in range(0, len(boxes), 2):
+            _print_box_row(boxes[i:i+2])
             print()
     else:
-        print(f"  {C.DARK}No active connections detected{C.RESET}\n")
+        print(f"  {C.DARK}No wireless interfaces detected{C.RESET}\n")
 
     if watchdog_target_ssid:
         print(f"  {C.LIME}⟳{C.RESET}  {C.DARK}Watchdog →{C.RESET} "
@@ -3489,10 +3474,18 @@ def main():
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
 
     if IS_ROOT:
-        # Auto-select first non-protected interface if default not present
+        # Auto-select active interface if the default (wlan1) isn't present.
+        # Priority: non-protected non-p2p → wlan0 → any non-p2p.
+        # p2p interfaces are never auto-selected.
         ifaces = get_wireless_ifaces()
         if active_iface not in ifaces:
-            candidates = [i for i in ifaces if i not in protected_ifaces]
+            candidates = [i for i in ifaces
+                          if i not in protected_ifaces and not i.startswith('p2p')]
+            if not candidates:
+                # Fall back to wlan0 if available, even though it's protected
+                candidates = [i for i in ifaces if i == 'wlan0']
+            if not candidates:
+                candidates = [i for i in ifaces if not i.startswith('p2p')]
             if candidates:
                 active_iface = candidates[0]
 
